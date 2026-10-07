@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:server": "node --watch server/server.js",
+    "dev:server": "node --env-file-if-exists=.env --watch server/server.js",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "start": "node server/server.js"
+    "start": "node --env-file-if-exists=.env server/server.js"
   },
   "devDependencies": {
     "typescript": "~6.0.2",
