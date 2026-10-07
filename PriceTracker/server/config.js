@@ -8,7 +8,7 @@ function read(env, name, fallback = '') {
 }
 
 // Validation Helper Function
-// check if HTTP and not HTTPS
+// check if HTTP or HTTPS only
 function isHttpUrl(value) {
   try {
     const url = new URL(value)
