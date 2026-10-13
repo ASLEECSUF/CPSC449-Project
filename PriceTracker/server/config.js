@@ -72,8 +72,26 @@ export function parseConfig(env) {
     warnings.push('NRP_TOKEN is not set; natural-language search is disabled')
   }
 
+  const brightData = {
+    apiKey: read(env, 'BRIGHTDATA_API_KEY'),
+    amazonDatasetId: read(env, 'BRIGHTDATA_AMAZON_DATASET_ID'),
+  }
+  brightData.enabled = Boolean(brightData.apiKey)
+  if (!brightData.enabled) {
+    warnings.push('BRIGHTDATA_API_KEY is not set; Amazon features are disabled')
+  } else if (!brightData.amazonDatasetId) {
+    errors.push('BRIGHTDATA_AMAZON_DATASET_ID is required when BRIGHTDATA_API_KEY is set')
+  }
+
+  const frankfurter = {
+    baseUrl: read(env, 'FRANKFURTER_BASE_URL', 'https://api.frankfurter.dev/v1'),
+  }
+  if (!isHttpUrl(frankfurter.baseUrl)) {
+    errors.push('FRANKFURTER_BASE_URL must be a valid http(s) URL')
+  }
+
   return {
-    config: { port, supabase, ebay, nrp },
+    config: { port, supabase, ebay, nrp, brightData, frankfurter },
     errors,
     warnings,
   }
