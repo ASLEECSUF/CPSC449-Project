@@ -11,8 +11,11 @@ function isClientAuthError(error) {
 
 function readBearerToken(request) {
 	const header = request.get('authorization') ?? ''
-	const match = /^Bearer\s+(\S+)$/i.exec(header)
-	return match ? match[1] : null
+	const parts = header.split(' ').filter((part) => part !== '')
+	if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer') {
+		return null
+	}
+	return parts[1]
 }
 
 async function requireAuth(request, response, next) {

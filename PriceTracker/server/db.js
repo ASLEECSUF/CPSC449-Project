@@ -55,7 +55,16 @@ export async function findProfile(userId) {
 	return data
 }
 
-const ITEM_COLUMNS = 'id, user_id, vendor, vendor_item_id, url, name, target_price, current_price, currency, created_at'
+export async function recordApiUsage(service, operation, succeeded) {
+	const { error } = await supabaseAdmin
+		.from('api_usage')
+		.insert({ service, operation, succeeded })
+	if (error) {
+		console.error(`Recording ${service} API usage failed:`, error)
+	}
+}
+
+const ITEM_COLUMNS ='id, user_id, vendor, vendor_item_id, url, name, target_price, current_price, currency, created_at'
 
 export async function listOwnedItems(userId) {
 	const { data, error } = await supabaseAdmin
@@ -92,5 +101,11 @@ export async function listOwnedPriceHistory(userId, itemId) {
 	if (error) {
 		throw error
 	}
-	return data.map(({ tracked_items: _owner, ...entry }) => entry)
+	return data.map((entry) => ({
+		id: entry.id,
+		item_id: entry.item_id,
+		price: entry.price,
+		currency: entry.currency,
+		recorded_at: entry.recorded_at,
+	}))
 }
