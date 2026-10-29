@@ -190,4 +190,4 @@ const server = app.listen(config.port, () => {
 	console.log(`Price Tracker API listening on port ${config.port}`)
 })
 
-export { app, requireAdmin, server }
+export { app, server }
