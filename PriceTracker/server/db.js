@@ -55,6 +55,19 @@ export async function findProfile(userId) {
 	return data
 }
 
+export async function updatePreferredCurrency(userId, currency) {
+	const { data, error } = await supabaseAdmin
+		.from('profiles')
+		.update({ preferred_currency: currency })
+		.eq('id', userId)
+		.select('role, disabled, preferred_currency')
+		.single()
+	if (error) {
+		throw error
+	}
+	return data
+}
+
 export async function recordApiUsage(service, operation, succeeded) {
 	const { error } = await supabaseAdmin
 		.from('api_usage')

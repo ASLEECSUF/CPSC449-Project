@@ -84,7 +84,7 @@ export function parseConfig(env) {
   }
 
   const frankfurter = {
-    baseUrl: read(env, 'FRANKFURTER_BASE_URL', 'https://api.frankfurter.dev/v1'),
+    baseUrl: read(env, 'FRANKFURTER_BASE_URL', 'https://api.frankfurter.dev'),
   }
   if (!isHttpUrl(frankfurter.baseUrl)) {
     errors.push('FRANKFURTER_BASE_URL must be a valid http(s) URL')

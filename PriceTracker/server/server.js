@@ -1,7 +1,15 @@
 import express, { Router } from 'express'
 import { isAuthError } from '@supabase/supabase-js'
+import { getSupportedCurrencies } from './apis.js'
 import config from './config.js'
-import { findOwnedItem, findProfile, getUserForToken, signIn, signUp } from './db.js'
+import {
+	findOwnedItem,
+	findProfile,
+	getUserForToken,
+	signIn,
+	signUp,
+	updatePreferredCurrency,
+} from './db.js'
 
 const INVALID_TEXT_REPRESENTATION = '22P02'
 
@@ -173,6 +181,74 @@ async function postLogin(request, response) {
 	response.json(toSessionBody(data.session))
 }
 
+function toProfileBody(user) {
+	return {
+		id: user.id,
+		email: user.email,
+		role: user.role,
+		preferredCurrency: user.preferredCurrency,
+	}
+}
+
+function readCurrencyInput(body) {
+	if (typeof body?.preferredCurrency !== 'string') {
+		return ''
+	}
+	return body.preferredCurrency.trim().toUpperCase()
+}
+
+function isListedCurrency(currencies, code) {
+	for (const currency of currencies) {
+		if (currency.code === code) {
+			return true
+		}
+	}
+	return false
+}
+
+function getProfile(request, response) {
+	response.json(toProfileBody(request.user))
+}
+
+async function patchProfile(request, response) {
+	const code = readCurrencyInput(request.body)
+	if (!code) {
+		response.status(400).json({ error: 'preferredCurrency is required' })
+		return
+	}
+
+	const supported = await getSupportedCurrencies()
+	if (!supported.currencies) {
+		response.status(503).json({ error: 'Currency service is unavailable' })
+		return
+	}
+	if (!isListedCurrency(supported.currencies, code)) {
+		response.status(400).json({ error: `Unsupported currency: ${code}` })
+		return
+	}
+
+	let profile
+	try {
+		profile = await updatePreferredCurrency(request.user.id, code)
+	} catch (error) {
+		console.error('Profile update failed:', error)
+		response.status(502).json({ error: 'Profile service is unavailable' })
+		return
+	}
+
+	request.user.preferredCurrency = profile.preferred_currency
+	response.json(toProfileBody(request.user))
+}
+
+async function getCurrencies(_request, response) {
+	const supported = await getSupportedCurrencies()
+	if (!supported.currencies) {
+		response.status(503).json({ error: 'Currency service is unavailable' })
+		return
+	}
+	response.json({ currencies: supported.currencies, stale: supported.stale })
+}
+
 const itemRouter = Router()
 itemRouter.use(requireAuth)
 itemRouter.param('id', loadOwnedItem)
@@ -186,6 +262,9 @@ app.use(express.json())
 app.get('/api/health', getHealth)
 app.post('/api/auth/signup', postSignup)
 app.post('/api/auth/login', postLogin)
+app.get('/api/profile', requireAuth, getProfile)
+app.patch('/api/profile', requireAuth, patchProfile)
+app.get('/api/currencies', requireAuth, getCurrencies)
 app.use('/api/items', itemRouter)
 app.use('/api/admin', adminRouter)
 

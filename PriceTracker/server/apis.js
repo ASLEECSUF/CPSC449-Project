@@ -17,12 +17,17 @@ const EBAY_TOKEN_REFRESH_MARGIN_MS = 300_000
 const EBAY_SEARCH_LIMIT = 20
 const EBAY_MAX_SEARCH_LIMIT = 50
 const EBAY_MAX_ITEM_ID_LENGTH = 19
+const FRANKFURTER_REQUEST_TIMEOUT_MS = 15_000
+const FRANKFURTER_CACHE_MS = 21_600_000
+const FRANKFURTER_RETRY_MS = 300_000
 const UPPERCASE_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 const DIGITS = '0123456789'
 
 let ebayToken = ''
 let ebayTokenExpiresAt = 0
 let ebayTokenRequest = null
+const currencyCache = createCacheEntry()
+const rateCaches = new Map()
 
 function isUppercaseLetter(character) {
 	return UPPERCASE_LETTERS.includes(character)
@@ -661,4 +666,203 @@ export async function searchEbayItems(query, limit = EBAY_SEARCH_LIMIT) {
 		items.push(item)
 	}
 	return items
+}
+
+function createCacheEntry() {
+	return { value: null, fetchedAt: 0, failedAt: 0, request: null }
+}
+
+function isFresh(entry) {
+	return entry.value !== null && Date.now() - entry.fetchedAt < FRANKFURTER_CACHE_MS
+}
+
+function failedRecently(entry) {
+	return Date.now() - entry.failedAt < FRANKFURTER_RETRY_MS
+}
+
+async function refreshCacheEntry(entry, load) {
+	try {
+		entry.value = await load()
+		entry.fetchedAt = Date.now()
+	} catch (error) {
+		entry.failedAt = Date.now()
+		console.error('Frankfurter refresh failed:', error)
+	} finally {
+		entry.request = null
+	}
+}
+
+async function readCacheEntry(entry, load) {
+	if (!isFresh(entry) && !failedRecently(entry)) {
+		if (!entry.request) {
+			entry.request = refreshCacheEntry(entry, load)
+		}
+		await entry.request
+	}
+	const stale = entry.value !== null && !isFresh(entry)
+	return { value: entry.value, stale }
+}
+
+async function frankfurterRequest(operation, path) {
+	let response
+	try {
+		response = await fetch(`${config.frankfurter.baseUrl}${path}`, {
+			signal: AbortSignal.timeout(FRANKFURTER_REQUEST_TIMEOUT_MS),
+		})
+	} catch (error) {
+		await recordApiUsage('frankfurter', operation, false)
+		throw new Error(`Frankfurter ${operation} request failed`, { cause: error })
+	}
+
+	await recordApiUsage('frankfurter', operation, response.ok)
+	if (!response.ok) {
+		throw new Error(`Frankfurter ${operation} request failed with status ${response.status}`)
+	}
+	return response.json()
+}
+
+function readCurrencyCode(value) {
+	const code = readText(value).toUpperCase()
+	if (!isCurrencyCode(code)) {
+		return null
+	}
+	return code
+}
+
+function toCurrency(record) {
+	if (!record || typeof record !== 'object') {
+		return null
+	}
+	const code = readCurrencyCode(record.iso_code)
+	const name = readText(record.name)
+	if (!code || !name) {
+		return null
+	}
+	return { code, name }
+}
+
+async function fetchCurrencies() {
+	const data = await frankfurterRequest('currencies', '/v2/currencies')
+	if (!Array.isArray(data)) {
+		throw new Error('Frankfurter currencies response was invalid')
+	}
+	const currencies = []
+	for (const record of data) {
+		const currency = toCurrency(record)
+		if (!currency) {
+			console.warn('Skipping invalid Frankfurter currency:', record)
+			continue
+		}
+		currencies.push(currency)
+	}
+	if (currencies.length === 0) {
+		throw new Error('Frankfurter returned no currencies')
+	}
+	return currencies
+}
+
+export async function getSupportedCurrencies() {
+	const cached = await readCacheEntry(currencyCache, fetchCurrencies)
+	return { currencies: cached.value, stale: cached.stale }
+}
+
+function readRate(value) {
+	const isNumber = typeof value === 'number' && Number.isFinite(value)
+	if (!isNumber || value <= 0) {
+		return null
+	}
+	return value
+}
+
+function toRate(record, base) {
+	if (!record || typeof record !== 'object') {
+		return null
+	}
+	const recordBase = readCurrencyCode(record.base)
+	const quote = readCurrencyCode(record.quote)
+	const rate = readRate(record.rate)
+	const date = readText(record.date)
+	if (recordBase !== base || !quote || rate === null || !date) {
+		return null
+	}
+	return { quote, rate, date }
+}
+
+async function fetchRates(base) {
+	const params = new URLSearchParams({ base })
+	const data = await frankfurterRequest('rates', `/v2/rates?${params}`)
+	if (!Array.isArray(data)) {
+		throw new Error(`Frankfurter rates response for ${base} was invalid`)
+	}
+	const rates = new Map()
+	for (const record of data) {
+		const rate = toRate(record, base)
+		if (!rate) {
+			console.warn('Skipping invalid Frankfurter rate:', record)
+			continue
+		}
+		rates.set(rate.quote, { rate: rate.rate, date: rate.date })
+	}
+	if (rates.size === 0) {
+		throw new Error(`Frankfurter returned no rates for ${base}`)
+	}
+	return rates
+}
+
+async function getRates(base) {
+	if (!rateCaches.has(base)) {
+		rateCaches.set(base, createCacheEntry())
+	}
+	const entry = rateCaches.get(base)
+	return readCacheEntry(entry, () => fetchRates(base))
+}
+
+function roundMoney(value) {
+	return Math.round(value * 100) / 100
+}
+
+function readAmount(value) {
+	if (typeof value !== 'number' || !Number.isFinite(value)) {
+		return null
+	}
+	return value
+}
+
+export async function convertPrice(amount, fromCurrency, toCurrency) {
+	const price = readAmount(amount)
+	const from = readCurrencyCode(fromCurrency)
+	const to = readCurrencyCode(toCurrency)
+	const result = {
+		price,
+		currency: from,
+		displayPrice: price,
+		displayCurrency: from,
+		rate: null,
+		rateDate: null,
+		rateStale: false,
+		converted: false,
+	}
+	if (!from || !to) {
+		return result
+	}
+	if (from === to) {
+		result.rate = 1
+		result.converted = true
+		return result
+	}
+
+	const rates = await getRates(from)
+	if (!rates.value || !rates.value.has(to)) {
+		return result
+	}
+	const quote = rates.value.get(to)
+	if (price !== null) {
+		result.displayPrice = roundMoney(price * quote.rate)
+	}
+	result.displayCurrency = to
+	result.rate = quote.rate
+	result.rateDate = quote.date
+	result.rateStale = rates.stale
+	result.converted = true
+	return result
 }
