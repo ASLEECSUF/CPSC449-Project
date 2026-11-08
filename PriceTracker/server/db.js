@@ -104,6 +104,89 @@ export async function findOwnedItem(userId, itemId) {
 	return data
 }
 
+export async function findOwnedItemByVendorId(userId, vendor, vendorItemId) {
+	const { data, error } = await supabaseAdmin
+		.from('tracked_items')
+		.select(ITEM_COLUMNS)
+		.eq('user_id', userId)
+		.eq('vendor', vendor)
+		.eq('vendor_item_id', vendorItemId)
+		.maybeSingle()
+	if (error) {
+		throw error
+	}
+	return data
+}
+
+export async function isVendorEnabled(name) {
+	const { data, error } = await supabaseAdmin
+		.from('vendors')
+		.select('enabled')
+		.eq('name', name)
+		.maybeSingle()
+	if (error) {
+		throw error
+	}
+	if (!data) {
+		return false
+	}
+	return data.enabled
+}
+
+export async function insertTrackedItem(userId, product) {
+	const { data, error } = await supabaseAdmin
+		.from('tracked_items')
+		.insert({
+			user_id: userId,
+			vendor: product.vendor,
+			vendor_item_id: product.vendorItemId,
+			url: product.url,
+			name: product.name,
+			current_price: product.price,
+			currency: product.currency,
+		})
+		.select(ITEM_COLUMNS)
+		.single()
+	if (error) {
+		throw error
+	}
+	return data
+}
+
+export async function updateOwnedTargetPrice(userId, itemId, targetPrice) {
+	const { data, error } = await supabaseAdmin
+		.from('tracked_items')
+		.update({ target_price: targetPrice })
+		.eq('id', itemId)
+		.eq('user_id', userId)
+		.select(ITEM_COLUMNS)
+		.single()
+	if (error) {
+		throw error
+	}
+	return data
+}
+
+export async function deleteOwnedItem(userId, itemId) {
+	const { error } = await supabaseAdmin
+		.from('tracked_items')
+		.delete()
+		.eq('id', itemId)
+		.eq('user_id', userId)
+	if (error) {
+		throw error
+	}
+}
+
+export async function insertPriceHistory(itemId, price, currency) {
+	const { error } = await supabaseAdmin
+		.from('price_history')
+		.insert({ item_id: itemId, price, currency })
+	if (error) {
+		throw error
+	}
+}
+
 export async function listOwnedPriceHistory(userId, itemId) {
 	const { data, error } = await supabaseAdmin
 		.from('price_history')

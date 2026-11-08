@@ -1,17 +1,38 @@
 import express, { Router } from 'express'
 import { isAuthError } from '@supabase/supabase-js'
-import { getSupportedCurrencies } from './apis.js'
+import {
+	convertPrice,
+	getEbayItem,
+	getSupportedCurrencies,
+	parseAmazonUrl,
+	parseEbayItem,
+	scrapeAmazonProduct,
+} from './apis.js'
 import config from './config.js'
 import {
+	deleteOwnedItem,
 	findOwnedItem,
+	findOwnedItemByVendorId,
 	findProfile,
 	getUserForToken,
+	insertPriceHistory,
+	insertTrackedItem,
+	isVendorEnabled,
+	listOwnedItems,
+	listOwnedPriceHistory,
 	signIn,
 	signUp,
+	updateOwnedTargetPrice,
 	updatePreferredCurrency,
 } from './db.js'
 
 const INVALID_TEXT_REPRESENTATION = '22P02'
+const UNIQUE_VIOLATION = '23505'
+const MAX_STORED_PRICE = 10_000_000_000
+const VENDOR_LABELS = {
+	amazon: 'Amazon',
+	ebay: 'eBay',
+}
 
 function isClientAuthError(error) {
 	return isAuthError(error) && error.status >= 400 && error.status < 500
@@ -249,9 +270,245 @@ async function getCurrencies(_request, response) {
 	response.json({ currencies: supported.currencies, stale: supported.stale })
 }
 
+async function toItemBody(item, displayCurrency) {
+	const current = await convertPrice(item.current_price, item.currency, displayCurrency)
+	const target = await convertPrice(item.target_price, item.currency, displayCurrency)
+	return {
+		id: item.id,
+		vendor: item.vendor,
+		vendorItemId: item.vendor_item_id,
+		url: item.url,
+		name: item.name,
+		currency: item.currency,
+		currentPrice: current.price,
+		targetPrice: target.price,
+		displayCurrency: current.displayCurrency,
+		displayCurrentPrice: current.displayPrice,
+		displayTargetPrice: target.displayPrice,
+		rate: current.rate,
+		rateDate: current.rateDate,
+		rateStale: current.rateStale,
+		converted: current.converted,
+		createdAt: item.created_at,
+	}
+}
+
+async function toHistoryPoint(entry, displayCurrency) {
+	const conversion = await convertPrice(entry.price, entry.currency, displayCurrency)
+	return {
+		id: entry.id,
+		recordedAt: entry.recorded_at,
+		price: conversion.price,
+		currency: conversion.currency,
+		displayPrice: conversion.displayPrice,
+		displayCurrency: conversion.displayCurrency,
+	}
+}
+
+function readItemInput(body) {
+	if (typeof body?.input !== 'string') {
+		return ''
+	}
+	return body.input.trim()
+}
+
+function detectVendorItem(input) {
+	const amazon = parseAmazonUrl(input)
+	if (amazon) {
+		return { vendor: 'amazon', vendorItemId: amazon.asin, url: amazon.url }
+	}
+	const ebay = parseEbayItem(input)
+	if (ebay) {
+		return { vendor: 'ebay', vendorItemId: ebay.itemId, url: ebay.url }
+	}
+	return null
+}
+
+function isVendorConfigured(vendor) {
+	if (vendor === 'amazon') {
+		return config.brightData.enabled
+	}
+	return config.ebay.enabled
+}
+
+async function fetchVendorProduct(vendorItem) {
+	if (vendorItem.vendor === 'amazon') {
+		return scrapeAmazonProduct(vendorItem.url)
+	}
+	return getEbayItem(vendorItem.vendorItemId)
+}
+
+function isValidPriceInput(value) {
+	if (value === null) {
+		return true
+	}
+	return Number.isFinite(value) && value >= 0
+}
+
+async function listItems(request, response) {
+	let items
+	try {
+		items = await listOwnedItems(request.user.id)
+	} catch (error) {
+		console.error('Tracked item list failed:', error)
+		response.status(502).json({ error: 'Item service is unavailable' })
+		return
+	}
+
+	const bodies = []
+	for (const item of items) {
+		bodies.push(await toItemBody(item, request.user.preferredCurrency))
+	}
+	response.json({ items: bodies })
+}
+
+async function addItem(request, response) {
+	const input = readItemInput(request.body)
+	const vendorItem = detectVendorItem(input)
+	if (!vendorItem) {
+		response.status(400).json({ error: 'input must be an Amazon product URL or an eBay item ID or link' })
+		return
+	}
+	const label = VENDOR_LABELS[vendorItem.vendor]
+	if (!isVendorConfigured(vendorItem.vendor)) {
+		response.status(503).json({ error: `${label} tracking is not configured` })
+		return
+	}
+
+	let vendorEnabled
+	let existing
+	try {
+		vendorEnabled = await isVendorEnabled(vendorItem.vendor)
+		existing = await findOwnedItemByVendorId(request.user.id, vendorItem.vendor, vendorItem.vendorItemId)
+	} catch (error) {
+		console.error('Tracked item check failed:', error)
+		response.status(502).json({ error: 'Item service is unavailable' })
+		return
+	}
+	if (!vendorEnabled) {
+		response.status(503).json({ error: `${label} tracking is disabled` })
+		return
+	}
+	if (existing) {
+		response.status(409).json({ error: 'You are already tracking this item' })
+		return
+	}
+
+	let product
+	try {
+		product = await fetchVendorProduct(vendorItem)
+	} catch (error) {
+		console.error(`${label} lookup failed:`, error)
+		response.status(502).json({ error: `${label} lookup failed` })
+		return
+	}
+	if (!product) {
+		response.status(422).json({ error: `Could not read a current price for this ${label} item` })
+		return
+	}
+
+	let item
+	try {
+		item = await insertTrackedItem(request.user.id, {
+			vendor: vendorItem.vendor,
+			vendorItemId: vendorItem.vendorItemId,
+			url: vendorItem.url,
+			name: product.name,
+			price: product.price,
+			currency: product.currency,
+		})
+	} catch (error) {
+		if (error?.code === UNIQUE_VIOLATION) {
+			response.status(409).json({ error: 'You are already tracking this item' })
+			return
+		}
+		console.error('Tracked item insert failed:', error)
+		response.status(502).json({ error: 'Item service is unavailable' })
+		return
+	}
+
+	try {
+		await insertPriceHistory(item.id, item.current_price, item.currency)
+	} catch (error) {
+		console.error('First price history entry failed:', error)
+	}
+
+	response.status(201).json(await toItemBody(item, request.user.preferredCurrency))
+}
+
+async function patchItem(request, response) {
+	const targetPrice = request.body?.targetPrice
+	if (targetPrice === undefined || !isValidPriceInput(targetPrice)) {
+		response.status(400).json({ error: 'targetPrice must be a non-negative number or null' })
+		return
+	}
+
+	let nativeTarget = null
+	if (targetPrice !== null) {
+		const conversion = await convertPrice(targetPrice, request.user.preferredCurrency, request.item.currency)
+		if (!conversion.converted) {
+			response.status(503).json({ error: 'Exchange rates are unavailable, so the target price was not saved' })
+			return
+		}
+		nativeTarget = conversion.displayPrice
+	}
+	if (nativeTarget !== null && nativeTarget >= MAX_STORED_PRICE) {
+		response.status(400).json({ error: 'targetPrice is too large' })
+		return
+	}
+
+	let item
+	try {
+		item = await updateOwnedTargetPrice(request.user.id, request.item.id, nativeTarget)
+	} catch (error) {
+		console.error('Target price update failed:', error)
+		response.status(502).json({ error: 'Item service is unavailable' })
+		return
+	}
+
+	response.json(await toItemBody(item, request.user.preferredCurrency))
+}
+
+async function deleteItem(request, response) {
+	try {
+		await deleteOwnedItem(request.user.id, request.item.id)
+	} catch (error) {
+		console.error('Tracked item delete failed:', error)
+		response.status(502).json({ error: 'Item service is unavailable' })
+		return
+	}
+	response.status(204).end()
+}
+
+async function getItemHistory(request, response) {
+	let entries
+	try {
+		entries = await listOwnedPriceHistory(request.user.id, request.item.id)
+	} catch (error) {
+		console.error('Price history lookup failed:', error)
+		response.status(502).json({ error: 'Price history service is unavailable' })
+		return
+	}
+
+	const displayCurrency = request.user.preferredCurrency
+	const points = []
+	for (const entry of entries) {
+		points.push(await toHistoryPoint(entry, displayCurrency))
+	}
+	response.json({
+		item: await toItemBody(request.item, displayCurrency),
+		points,
+	})
+}
+
 const itemRouter = Router()
 itemRouter.use(requireAuth)
 itemRouter.param('id', loadOwnedItem)
+itemRouter.get('/', listItems)
+itemRouter.post('/', addItem)
+itemRouter.patch('/:id', patchItem)
+itemRouter.delete('/:id', deleteItem)
+itemRouter.get('/:id/history', getItemHistory)
 
 const adminRouter = Router()
 adminRouter.use(requireAuth, requireAdmin)
