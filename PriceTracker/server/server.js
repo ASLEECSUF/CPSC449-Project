@@ -25,6 +25,7 @@ import {
 	updateOwnedTargetPrice,
 	updatePreferredCurrency,
 } from './db.js'
+import { startPoller } from './poller.js'
 
 const INVALID_TEXT_REPRESENTATION = '22P02'
 const UNIQUE_VIOLATION = '23505'
@@ -527,6 +528,7 @@ app.use('/api/admin', adminRouter)
 
 const server = app.listen(config.port, () => {
 	console.log(`Price Tracker API listening on port ${config.port}`)
+	startPoller()
 })
 
 export { app, server }

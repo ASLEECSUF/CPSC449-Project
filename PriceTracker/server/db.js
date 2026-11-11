@@ -178,6 +178,27 @@ export async function deleteOwnedItem(userId, itemId) {
 	}
 }
 
+export async function listVendorItems(vendor) {
+	const { data, error } = await supabaseAdmin
+		.from('tracked_items')
+		.select('id, vendor_item_id, url, current_price, currency')
+		.eq('vendor', vendor)
+	if (error) {
+		throw error
+	}
+	return data
+}
+
+export async function updateItemPrice(itemId, price, currency) {
+	const { error } = await supabaseAdmin
+		.from('tracked_items')
+		.update({ current_price: price, currency })
+		.eq('id', itemId)
+	if (error) {
+		throw error
+	}
+}
+
 export async function insertPriceHistory(itemId, price, currency) {
 	const { error } = await supabaseAdmin
 		.from('price_history')
