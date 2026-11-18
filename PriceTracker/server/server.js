@@ -144,6 +144,7 @@ function toUser(user) {
 function toSessionBody(session) {
 	return {
 		accessToken: session.access_token,
+		refreshToken: session.refresh_token,
 		expiresAt: session.expires_at,
 		user: toUser(session.user),
 	}

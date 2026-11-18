@@ -1,60 +1,115 @@
-import './style.css'
-import heroImg from './assets/hero.png'
-import typescriptLogo from './assets/typescript.svg'
-import viteLogo from './assets/vite.svg'
-import { setupCounter } from './counter.ts'
+import { apiRequest } from './api.ts'
+import { supabase } from './supabase.ts'
 
-document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
-<section id="center">
-  <div class="hero">
-    <img src="${heroImg}" class="base" width="170" height="179">
-    <img src="${typescriptLogo}" class="framework" alt="TypeScript logo"/>
-    <img src="${viteLogo}" class="vite" alt="Vite logo" />
-  </div>
-  <div>
-    <h1>Get started</h1>
-    <p>Edit <code>src/main.ts</code> and save to test <code>HMR</code></p>
-  </div>
-  <button id="counter" type="button" class="counter"></button>
-</section>
+const statusText = document.querySelector<HTMLParagraphElement>('#status')!
+const authSection = document.querySelector<HTMLElement>('#auth-section')!
+const accountSection = document.querySelector<HTMLElement>('#account-section')!
+const accountEmail = document.querySelector<HTMLSpanElement>('#account-email')!
+const signupForm = document.querySelector<HTMLFormElement>('#signup-form')!
+const loginForm = document.querySelector<HTMLFormElement>('#login-form')!
+const logoutButton = document.querySelector<HTMLButtonElement>('#logout-button')!
 
-<div class="ticks"></div>
+function showStatus(message: string) {
+	statusText.textContent = message
+}
 
-<section id="next-steps">
-  <div id="docs">
-    <svg class="icon" role="presentation" aria-hidden="true"><use href="/icons.svg#documentation-icon"></use></svg>
-    <h2>Documentation</h2>
-    <p>Your questions, answered</p>
-    <ul>
-      <li>
-        <a href="https://vite.dev/" target="_blank">
-          <img class="logo" src="${viteLogo}" alt="" />
-          Explore Vite
-        </a>
-      </li>
-      <li>
-        <a href="https://www.typescriptlang.org" target="_blank">
-          <img class="button-icon" src="${typescriptLogo}" alt="">
-          Learn more
-        </a>
-      </li>
-    </ul>
-  </div>
-  <div id="social">
-    <svg class="icon" role="presentation" aria-hidden="true"><use href="/icons.svg#social-icon"></use></svg>
-    <h2>Connect with us</h2>
-    <p>Join the Vite community</p>
-    <ul>
-      <li><a href="https://github.com/vitejs/vite" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#github-icon"></use></svg>GitHub</a></li>
-      <li><a href="https://chat.vite.dev/" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#discord-icon"></use></svg>Discord</a></li>
-      <li><a href="https://x.com/vite_js" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#x-icon"></use></svg>X.com</a></li>
-      <li><a href="https://bsky.app/profile/vite.dev" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#bluesky-icon"></use></svg>Bluesky</a></li>
-    </ul>
-  </div>
-</section>
+function readErrorText(error: unknown): string {
+	if (error instanceof Error) {
+		return error.message
+	}
+	return 'Something went wrong'
+}
 
-<div class="ticks"></div>
-<section id="spacer"></section>
-`
+function readCredentials(form: HTMLFormElement) {
+	const fields = new FormData(form)
+	return {
+		email: String(fields.get('email')),
+		password: String(fields.get('password')),
+	}
+}
 
-setupCounter(document.querySelector<HTMLButtonElement>('#counter')!)
+function showSignedOut() {
+	authSection.hidden = false
+	accountSection.hidden = true
+	accountEmail.textContent = ''
+}
+
+function showSignedIn(email: string) {
+	authSection.hidden = true
+	accountSection.hidden = false
+	accountEmail.textContent = email
+}
+
+async function loadAccount() {
+	const { data } = await supabase.auth.getSession()
+	if (!data.session) {
+		showSignedOut()
+		return
+	}
+
+	showSignedIn(data.session.user.email ?? '')
+	try {
+		const profile = await apiRequest('GET', '/api/profile')
+		showSignedIn(profile.email)
+	} catch (error) {
+		showStatus(readErrorText(error))
+	}
+}
+
+async function keepSession(body: any) {
+	const { error } = await supabase.auth.setSession({
+		access_token: body.accessToken,
+		refresh_token: body.refreshToken,
+	})
+	if (error) {
+		throw error
+	}
+}
+
+async function handleSignup(event: SubmitEvent) {
+	event.preventDefault()
+	showStatus('Signing up...')
+	try {
+		const body = await apiRequest('POST', '/api/auth/signup', readCredentials(signupForm))
+		signupForm.reset()
+		if (body.emailConfirmationRequired) {
+			showStatus('Account created. Open the link in the confirmation email, then log in.')
+			return
+		}
+		await keepSession(body)
+		showStatus('')
+		await loadAccount()
+	} catch (error) {
+		showStatus(readErrorText(error))
+	}
+}
+
+async function handleLogin(event: SubmitEvent) {
+	event.preventDefault()
+	showStatus('Logging in...')
+	try {
+		const body = await apiRequest('POST', '/api/auth/login', readCredentials(loginForm))
+		loginForm.reset()
+		await keepSession(body)
+		showStatus('')
+		await loadAccount()
+	} catch (error) {
+		showStatus(readErrorText(error))
+	}
+}
+
+async function handleLogout() {
+	const { error } = await supabase.auth.signOut()
+	if (error) {
+		showStatus(readErrorText(error))
+	} else {
+		showStatus('')
+	}
+	showSignedOut()
+}
+
+signupForm.addEventListener('submit', handleSignup)
+loginForm.addEventListener('submit', handleLogin)
+logoutButton.addEventListener('click', handleLogout)
+
+loadAccount()

@@ -1,13 +1,36 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>pricetracker</title>
-  </head>
-  <body>
-    <div id="app"></div>
-    <script type="module" src="/src/main.ts"></script>
-  </body>
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Price Tracker</title>
+	</head>
+	<body>
+		<h1>Price Tracker</h1>
+		<p id="status"></p>
+
+		<section id="auth-section">
+			<h2>Sign Up</h2>
+			<form id="signup-form">
+				<label>Email <input type="email" name="email" required /></label>
+				<label>Password <input type="password" name="password" required /></label>
+				<button type="submit">Sign Up</button>
+			</form>
+
+			<h2>Log In</h2>
+			<form id="login-form">
+				<label>Email <input type="email" name="email" required /></label>
+				<label>Password <input type="password" name="password" required /></label>
+				<button type="submit">Log In</button>
+			</form>
+		</section>
+
+		<section id="account-section" hidden>
+			<h2>Account</h2>
+			<p>Signed in as <span id="account-email"></span></p>
+			<button type="button" id="logout-button">Log Out</button>
+		</section>
+
+		<script type="module" src="/src/main.ts"></script>
+	</body>
 </html>
