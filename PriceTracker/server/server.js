@@ -150,6 +150,13 @@ function toSessionBody(session) {
 	}
 }
 
+function isExistingAccount(user) {
+	if (!user || !Array.isArray(user.identities)) {
+		return false
+	}
+	return user.identities.length === 0
+}
+
 function sendAuthError(response, error, invalidRequestStatus) {
 	if (!isClientAuthError(error)) {
 		console.error('Supabase Auth request failed:', error)
@@ -179,6 +186,10 @@ async function postSignup(request, response) {
 		return
 	}
 
+	if (isExistingAccount(data.user)) {
+		response.status(409).json({ error: 'An account with this email already exists. Log in instead.' })
+		return
+	}
 	if (data.session) {
 		response.status(201).json(toSessionBody(data.session))
 		return
