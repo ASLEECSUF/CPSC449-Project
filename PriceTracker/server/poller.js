@@ -2,15 +2,15 @@ import { getEbayItem, scrapeAmazonProducts } from './apis.js'
 import config from './config.js'
 import { insertPriceHistory, isVendorEnabled, listVendorItems, updateItemPrice } from './db.js'
 
-const AMAZON_POLL_INTERVAL_MS = 21_600_000
-const EBAY_POLL_INTERVAL_MS = 1_800_000
+const MS_PER_MINUTE = 60_000
 
 const vendors = [
 	{
 		name: 'amazon',
 		label: 'Amazon',
 		configured: config.brightData.enabled,
-		intervalMs: AMAZON_POLL_INTERVAL_MS,
+		missingSetting: 'BRIGHTDATA_API_KEY is not set',
+		intervalMinutes: config.polling.amazonIntervalMinutes,
 		fetchPrices: fetchAmazonPrices,
 		running: false,
 		timer: null,
@@ -19,12 +19,17 @@ const vendors = [
 		name: 'ebay',
 		label: 'eBay',
 		configured: config.ebay.enabled,
-		intervalMs: EBAY_POLL_INTERVAL_MS,
+		missingSetting: 'EBAY_CLIENT_ID and EBAY_CLIENT_SECRET are not both set',
+		intervalMinutes: config.polling.ebayIntervalMinutes,
 		fetchPrices: fetchEbayPrices,
 		running: false,
 		timer: null,
 	},
 ]
+
+function withTime(message) {
+	return `[${new Date().toISOString()}] ${message}`
+}
 
 function groupByVendorItemId(items) {
 	const groups = new Map()
@@ -58,16 +63,26 @@ async function fetchEbayPrices(groups) {
 		try {
 			product = await getEbayItem(itemId)
 		} catch (error) {
-			console.error(`eBay lookup for item ${itemId} failed:`, error)
+			console.error(withTime(`eBay lookup for item ${itemId} failed:`), error)
 			continue
 		}
 		if (!product) {
-			console.warn(`eBay item ${itemId} has no current price`)
+			console.warn(withTime(`eBay item ${itemId} has no current price`))
 			continue
 		}
 		prices.set(itemId, product)
 	}
 	return prices
+}
+
+function countMissingPrices(groups, prices) {
+	let missing = 0
+	for (const vendorItemId of groups.keys()) {
+		if (!prices.has(vendorItemId)) {
+			missing++
+		}
+	}
+	return missing
 }
 
 function hasPriceChanged(item, product) {
@@ -83,7 +98,7 @@ async function recordPrice(item, product) {
 }
 
 async function recordChangedPrices(groups, prices) {
-	let recorded = 0
+	const result = { recorded: 0, failed: 0 }
 	for (const vendorItemId of groups.keys()) {
 		const product = prices.get(vendorItemId)
 		if (!product) {
@@ -95,41 +110,56 @@ async function recordChangedPrices(groups, prices) {
 			}
 			try {
 				await recordPrice(item, product)
-				recorded++
+				result.recorded++
 			} catch (error) {
-				console.error(`Recording a new price for tracked item ${item.id} failed:`, error)
+				result.failed++
+				console.error(withTime(`Recording a new price for tracked item ${item.id} failed:`), error)
 			}
 		}
 	}
-	return recorded
+	return result
 }
 
 async function runVendorPoll(vendor) {
 	const enabled = await isVendorEnabled(vendor.name)
 	if (!enabled) {
+		console.log(withTime(`${vendor.label} poll skipped: vendor is disabled`))
 		return
 	}
 
 	const items = await listVendorItems(vendor.name)
 	if (items.length === 0) {
+		console.log(withTime(`${vendor.label} poll skipped: no tracked items`))
 		return
 	}
 
 	const groups = groupByVendorItemId(items)
+	console.log(withTime(`${vendor.label} poll started for ${groups.size} items`))
+	const startedAt = Date.now()
 	const prices = await vendor.fetchPrices(groups)
-	const recorded = await recordChangedPrices(groups, prices)
-	console.log(`${vendor.label} poll checked ${groups.size} items and recorded ${recorded} price changes`)
+	const missing = countMissingPrices(groups, prices)
+	const result = await recordChangedPrices(groups, prices)
+	const seconds = Math.round((Date.now() - startedAt) / 1000)
+
+	console.log(withTime(`${vendor.label} poll finished in ${seconds}s: recorded ${result.recorded} price changes`))
+	if (missing > 0) {
+		console.warn(withTime(`${vendor.label} poll could not get a price for ${missing} of ${groups.size} items`))
+	}
+	if (result.failed > 0) {
+		console.error(withTime(`${vendor.label} poll failed to save ${result.failed} price changes`))
+	}
 }
 
 async function pollVendor(vendor) {
 	if (vendor.running) {
+		console.warn(withTime(`${vendor.label} poll skipped: the previous poll is still running`))
 		return
 	}
 	vendor.running = true
 	try {
 		await runVendorPoll(vendor)
 	} catch (error) {
-		console.error(`${vendor.label} price poll failed:`, error)
+		console.error(withTime(`${vendor.label} price poll failed:`), error)
 	} finally {
 		vendor.running = false
 	}
@@ -137,9 +167,30 @@ async function pollVendor(vendor) {
 
 export function startPoller() {
 	for (const vendor of vendors) {
-		if (!vendor.configured || vendor.timer) {
+		if (vendor.timer) {
 			continue
 		}
-		vendor.timer = setInterval(() => pollVendor(vendor), vendor.intervalMs)
+		if (!vendor.configured) {
+			console.warn(withTime(`${vendor.label} polling is off: ${vendor.missingSetting}`))
+			continue
+		}
+		const intervalMs = vendor.intervalMinutes * MS_PER_MINUTE
+		vendor.timer = setInterval(() => pollVendor(vendor), intervalMs)
+		console.log(withTime(`${vendor.label} polling every ${vendor.intervalMinutes} minutes`))
 	}
+	console.log(withTime('Price poller started'))
+}
+
+export function stopPoller() {
+	for (const vendor of vendors) {
+		if (!vendor.timer) {
+			continue
+		}
+		clearInterval(vendor.timer)
+		vendor.timer = null
+		if (vendor.running) {
+			console.warn(withTime(`${vendor.label} poll was still running when the poller stopped`))
+		}
+	}
+	console.log(withTime('Price poller stopped'))
 }

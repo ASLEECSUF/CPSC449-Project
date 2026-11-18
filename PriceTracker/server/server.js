@@ -25,7 +25,7 @@ import {
 	updateOwnedTargetPrice,
 	updatePreferredCurrency,
 } from './db.js'
-import { startPoller } from './poller.js'
+import { startPoller, stopPoller } from './poller.js'
 
 const INVALID_TEXT_REPRESENTATION = '22P02'
 const UNIQUE_VIOLATION = '23505'
@@ -530,5 +530,17 @@ const server = app.listen(config.port, () => {
 	console.log(`Price Tracker API listening on port ${config.port}`)
 	startPoller()
 })
+
+function shutDown(signal) {
+	console.log(`Received ${signal}, shutting down`)
+	stopPoller()
+	server.close(() => {
+		console.log('Price Tracker API stopped')
+		process.exit(0)
+	})
+}
+
+process.on('SIGINT', shutDown)
+process.on('SIGTERM', shutDown)
 
 export { app, server }
