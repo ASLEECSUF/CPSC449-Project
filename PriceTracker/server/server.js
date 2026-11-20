@@ -3,10 +3,13 @@ import { isAuthError } from '@supabase/supabase-js'
 import {
 	convertPrice,
 	getEbayItem,
+	getEbaySearchCurrency,
 	getSupportedCurrencies,
 	parseAmazonUrl,
 	parseEbayItem,
+	parseSearchQuery,
 	scrapeAmazonProduct,
+	searchEbayItems,
 } from './apis.js'
 import config from './config.js'
 import {
@@ -30,6 +33,7 @@ import { startPoller, stopPoller } from './poller.js'
 const INVALID_TEXT_REPRESENTATION = '22P02'
 const UNIQUE_VIOLATION = '23505'
 const MAX_STORED_PRICE = 10_000_000_000
+const MAX_SEARCH_QUERY_LENGTH = 200
 const VENDOR_LABELS = {
 	amazon: 'Amazon',
 	ebay: 'eBay',
@@ -514,6 +518,136 @@ async function getItemHistory(request, response) {
 	})
 }
 
+function readSearchQuery(body) {
+	if (typeof body?.query !== 'string') {
+		return ''
+	}
+	return body.query.trim()
+}
+
+function toPlainSearch(query) {
+	return { keywords: query, minPrice: null, maxPrice: null, condition: null }
+}
+
+async function readSearchParams(query) {
+	if (!config.nrp.enabled) {
+		return { aiParsed: false, params: toPlainSearch(query) }
+	}
+
+	let params = null
+	try {
+		params = await parseSearchQuery(query)
+	} catch (error) {
+		console.error('LLM search parsing failed:', error)
+	}
+	if (!params) {
+		return { aiParsed: false, params: toPlainSearch(query) }
+	}
+	return { aiParsed: true, params }
+}
+
+async function toEbaySearch(params, displayCurrency) {
+	const search = {
+		keywords: params.keywords,
+		minPrice: null,
+		maxPrice: null,
+		condition: params.condition,
+	}
+	const hasPrice = params.minPrice !== null || params.maxPrice !== null
+	if (!hasPrice) {
+		return { search, priceFilterSkipped: false }
+	}
+
+	const searchCurrency = getEbaySearchCurrency()
+	if (!searchCurrency) {
+		return { search, priceFilterSkipped: true }
+	}
+	const low = await convertPrice(params.minPrice, displayCurrency, searchCurrency)
+	const high = await convertPrice(params.maxPrice, displayCurrency, searchCurrency)
+	if (!low.converted || !high.converted) {
+		return { search, priceFilterSkipped: true }
+	}
+	search.minPrice = low.displayPrice
+	search.maxPrice = high.displayPrice
+	return { search, priceFilterSkipped: false }
+}
+
+async function toSearchResultBody(item, displayCurrency) {
+	const conversion = await convertPrice(item.price, item.currency, displayCurrency)
+	return {
+		itemId: item.itemId,
+		url: item.url,
+		name: item.name,
+		condition: item.condition,
+		imageUrl: item.imageUrl,
+		price: conversion.price,
+		currency: conversion.currency,
+		displayPrice: conversion.displayPrice,
+		displayCurrency: conversion.displayCurrency,
+		rateDate: conversion.rateDate,
+		rateStale: conversion.rateStale,
+		converted: conversion.converted,
+	}
+}
+
+async function postSearch(request, response) {
+	const query = readSearchQuery(request.body)
+	if (!query) {
+		response.status(400).json({ error: 'query is required' })
+		return
+	}
+	if (query.length > MAX_SEARCH_QUERY_LENGTH) {
+		response.status(400).json({ error: `query must be ${MAX_SEARCH_QUERY_LENGTH} characters or fewer` })
+		return
+	}
+	if (!config.ebay.enabled) {
+		response.status(503).json({ error: 'eBay search is not configured' })
+		return
+	}
+
+	let vendorEnabled
+	try {
+		vendorEnabled = await isVendorEnabled('ebay')
+	} catch (error) {
+		console.error('Vendor check failed:', error)
+		response.status(502).json({ error: 'Item service is unavailable' })
+		return
+	}
+	if (!vendorEnabled) {
+		response.status(503).json({ error: 'eBay search is disabled' })
+		return
+	}
+
+	const displayCurrency = request.user.preferredCurrency
+	const searchParams = await readSearchParams(query)
+	const ebaySearch = await toEbaySearch(searchParams.params, displayCurrency)
+
+	let items
+	try {
+		items = await searchEbayItems(ebaySearch.search)
+	} catch (error) {
+		console.error('eBay search failed:', error)
+		response.status(502).json({ error: 'eBay search failed' })
+		return
+	}
+
+	const results = []
+	for (const item of items) {
+		results.push(await toSearchResultBody(item, displayCurrency))
+	}
+	response.json({
+		query,
+		aiParsed: searchParams.aiParsed,
+		keywords: searchParams.params.keywords,
+		minPrice: searchParams.params.minPrice,
+		maxPrice: searchParams.params.maxPrice,
+		priceCurrency: displayCurrency,
+		condition: searchParams.params.condition,
+		priceFilterSkipped: ebaySearch.priceFilterSkipped,
+		results,
+	})
+}
+
 const itemRouter = Router()
 itemRouter.use(requireAuth)
 itemRouter.param('id', loadOwnedItem)
@@ -536,6 +670,7 @@ app.get('/api/profile', requireAuth, getProfile)
 app.patch('/api/profile', requireAuth, patchProfile)
 app.get('/api/currencies', requireAuth, getCurrencies)
 app.use('/api/items', itemRouter)
+app.post('/api/search', requireAuth, postSearch)
 app.use('/api/admin', adminRouter)
 
 const server = app.listen(config.port, () => {

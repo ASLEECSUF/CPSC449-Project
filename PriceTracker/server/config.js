@@ -72,7 +72,7 @@ export function parseConfig(env) {
 	const nrp = {
 		token: read(env, 'NRP_TOKEN'),
 		baseUrl: read(env, 'NRP_BASE_URL', 'https://ellm.nrp-nautilus.io/v1'),
-		model: read(env, 'NRP_MODEL', 'gemma3'),
+		model: read(env, 'NRP_MODEL', 'gemma'),
 	}
 	if (!isHttpUrl(nrp.baseUrl)) {
 		errors.push('NRP_BASE_URL must be a valid http(s) URL')

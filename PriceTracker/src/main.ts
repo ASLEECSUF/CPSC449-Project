@@ -3,6 +3,7 @@ import { apiRequest } from './api.ts'
 import { drawPriceGraph } from './graph.ts'
 import type { HistoryPoint } from './graph.ts'
 import { supabase } from './supabase.ts'
+import './style.css'
 
 interface Currency {
 	code: string
@@ -24,7 +25,20 @@ interface TrackedItem {
 	converted: boolean
 }
 
+interface SearchResult {
+	itemId: string
+	url: string
+	name: string
+	condition: string | null
+	price: number | null
+	currency: string | null
+	displayPrice: number | null
+	displayCurrency: string | null
+	converted: boolean
+}
+
 const ITEM_COLUMN_COUNT = 7
+const SEARCH_COLUMN_COUNT = 5
 
 const statusText = document.querySelector<HTMLParagraphElement>('#status')!
 const authSection = document.querySelector<HTMLElement>('#auth-section')!
@@ -44,6 +58,11 @@ const historySection = document.querySelector<HTMLElement>('#history-section')!
 const historyName = document.querySelector<HTMLSpanElement>('#history-name')!
 const historyNote = document.querySelector<HTMLParagraphElement>('#history-note')!
 const historyGraph = document.querySelector<SVGSVGElement>('#history-graph')!
+const searchSection = document.querySelector<HTMLElement>('#search-section')!
+const searchForm = document.querySelector<HTMLFormElement>('#search-form')!
+const searchButton = document.querySelector<HTMLButtonElement>('#search-button')!
+const searchNote = document.querySelector<HTMLParagraphElement>('#search-note')!
+const searchBody = document.querySelector<HTMLTableSectionElement>('#search-body')!
 
 let trackedItems: TrackedItem[] = []
 let historyItemId: string | null = null
@@ -400,6 +419,124 @@ async function stopPriceUpdates() {
 	priceChannel = null
 }
 
+function describePriceLimit(body: any): string {
+	const low = formatPrice(body.minPrice, body.priceCurrency)
+	const high = formatPrice(body.maxPrice, body.priceCurrency)
+	if (low !== '' && high !== '') {
+		return `between ${low} and ${high}`
+	}
+	if (low !== '') {
+		return `at least ${low}`
+	}
+	if (high !== '') {
+		return `up to ${high}`
+	}
+	return ''
+}
+
+function hasUnconvertedResult(results: SearchResult[]): boolean {
+	for (const result of results) {
+		if (!result.converted) {
+			return true
+		}
+	}
+	return false
+}
+
+function describeSearch(body: any): string {
+	let text = `Searched eBay for "${body.keywords}"`
+	if (body.condition) {
+		text += `, ${body.condition} only`
+	}
+	const priceLimit = describePriceLimit(body)
+	if (priceLimit !== '') {
+		text += `, ${priceLimit}`
+	}
+	text += '.'
+	if (!body.aiParsed) {
+		text += ' The AI search helper was unavailable, so your text was searched as typed.'
+	}
+	if (body.priceFilterSkipped) {
+		text += ' The price limit was not applied because exchange rates are unavailable.'
+	}
+	if (hasUnconvertedResult(body.results)) {
+		text += ' Some prices are in their native currency because exchange rates are unavailable.'
+	}
+	return text
+}
+
+function createLink(text: string, url: string): HTMLAnchorElement {
+	const link = document.createElement('a')
+	link.href = url
+	link.target = '_blank'
+	link.rel = 'noopener'
+	link.textContent = text
+	return link
+}
+
+async function trackSearchResult(result: SearchResult, button: HTMLButtonElement) {
+	showStatus('Adding item...')
+	button.disabled = true
+	try {
+		await apiRequest('POST', '/api/items', { input: result.itemId })
+	} catch (error) {
+		showStatus(readErrorText(error))
+		button.disabled = false
+		return
+	}
+	button.textContent = 'Tracked'
+	showStatus('')
+	await loadItems()
+}
+
+function buildSearchRow(result: SearchResult): HTMLTableRowElement {
+	const row = document.createElement('tr')
+	const nameCell = row.insertCell()
+	nameCell.append(createLink(result.name, result.url))
+	addCell(row, result.condition ?? '')
+	addCell(row, formatPrice(result.displayPrice, result.displayCurrency))
+	addCell(row, formatPrice(result.price, result.currency))
+
+	const trackCell = row.insertCell()
+	const trackButton = createButton('Track', () => trackSearchResult(result, trackButton))
+	trackCell.append(trackButton)
+	return row
+}
+
+function renderSearchResults(results: SearchResult[]) {
+	searchBody.replaceChildren()
+	if (results.length === 0) {
+		const row = searchBody.insertRow()
+		const cell = addCell(row, 'No results found.')
+		cell.colSpan = SEARCH_COLUMN_COUNT
+		return
+	}
+	for (const result of results) {
+		searchBody.append(buildSearchRow(result))
+	}
+}
+
+function clearSearchResults() {
+	searchNote.textContent = ''
+	searchBody.replaceChildren()
+}
+
+async function handleSearch(event: SubmitEvent) {
+	event.preventDefault()
+	const fields = new FormData(searchForm)
+	showStatus('Searching...')
+	searchButton.disabled = true
+	try {
+		const body = await apiRequest('POST', '/api/search', { query: String(fields.get('query')) })
+		searchNote.textContent = describeSearch(body)
+		renderSearchResults(body.results)
+		showStatus('')
+	} catch (error) {
+		showStatus(readErrorText(error))
+	}
+	searchButton.disabled = false
+}
+
 function fillCurrencySelect(currencies: Currency[], selectedCode: string) {
 	currencySelect.replaceChildren()
 	for (const currency of currencies) {
@@ -431,6 +568,7 @@ async function handleSaveCurrency(event: SubmitEvent) {
 		showStatus(readErrorText(error))
 		return
 	}
+	clearSearchResults()
 	await reloadPrices()
 	showStatus('Currency saved.')
 }
@@ -440,10 +578,13 @@ function showSignedOut() {
 	accountSection.hidden = true
 	settingsSection.hidden = true
 	itemsSection.hidden = true
+	searchSection.hidden = true
 	accountEmail.textContent = ''
 	currencySelect.replaceChildren()
 	trackedItems = []
 	itemsBody.replaceChildren()
+	searchForm.reset()
+	clearSearchResults()
 	hideHistory()
 }
 
@@ -452,6 +593,7 @@ function showSignedIn(email: string) {
 	accountSection.hidden = false
 	settingsSection.hidden = false
 	itemsSection.hidden = false
+	searchSection.hidden = false
 	accountEmail.textContent = email
 }
 
@@ -535,5 +677,6 @@ loginForm.addEventListener('submit', handleLogin)
 logoutButton.addEventListener('click', handleLogout)
 currencyForm.addEventListener('submit', handleSaveCurrency)
 addItemForm.addEventListener('submit', handleAddItem)
+searchForm.addEventListener('submit', handleSearch)
 
 loadAccount()

@@ -20,6 +20,28 @@ const EBAY_MAX_ITEM_ID_LENGTH = 19
 const FRANKFURTER_REQUEST_TIMEOUT_MS = 15_000
 const FRANKFURTER_CACHE_MS = 21_600_000
 const FRANKFURTER_RETRY_MS = 300_000
+const EBAY_MARKETPLACE_CURRENCIES = {
+	EBAY_US: 'USD',
+	EBAY_CA: 'CAD',
+	EBAY_GB: 'GBP',
+	EBAY_AU: 'AUD',
+	EBAY_DE: 'EUR',
+	EBAY_FR: 'EUR',
+	EBAY_IT: 'EUR',
+	EBAY_ES: 'EUR',
+}
+const NRP_REQUEST_TIMEOUT_MS = 30_000
+const NRP_MAX_REPLY_TOKENS = 200
+const MAX_SEARCH_KEYWORDS_LENGTH = 100
+const SEARCH_CONDITIONS = ['new', 'used']
+const SEARCH_PROMPT = [
+	'You turn a shopping request into search settings for eBay.',
+	'Reply with only one JSON object and no other text, in this shape:',
+	'{"keywords": string, "minPrice": number or null, "maxPrice": number or null, "condition": "new" or "used" or null}',
+	'keywords: the product words to search for, without prices, condition, or filler words.',
+	'minPrice and maxPrice: plain numbers taken from the request, without currency symbols. Use null when the request gives no limit.',
+	'condition: "new" or "used" only when the request asks for one, otherwise null.',
+].join('\n')
 const UPPERCASE_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 const DIGITS = '0123456789'
 
@@ -641,15 +663,53 @@ function readSearchLimit(limit) {
 	return limit
 }
 
-export async function searchEbayItems(query, limit = EBAY_SEARCH_LIMIT) {
-	const keywords = readText(query)
+export function getEbaySearchCurrency() {
+	const currency = EBAY_MARKETPLACE_CURRENCIES[config.ebay.marketplaceId]
+	if (!currency) {
+		return null
+	}
+	return currency
+}
+
+function formatFilterPrice(price) {
+	if (price === null) {
+		return ''
+	}
+	return String(price)
+}
+
+function buildPriceFilter(minPrice, maxPrice) {
+	const low = formatFilterPrice(minPrice)
+	const high = formatFilterPrice(maxPrice)
+	if (high === '') {
+		return `price:[${low}]`
+	}
+	return `price:[${low}..${high}]`
+}
+
+function buildSearchFilter(search) {
+	const filters = ['buyingOptions:{FIXED_PRICE}']
+	const currency = getEbaySearchCurrency()
+	const hasPrice = search.minPrice !== null || search.maxPrice !== null
+	if (hasPrice && currency) {
+		filters.push(buildPriceFilter(search.minPrice, search.maxPrice))
+		filters.push(`priceCurrency:${currency}`)
+	}
+	if (search.condition !== null) {
+		filters.push(`conditions:{${search.condition.toUpperCase()}}`)
+	}
+	return filters.join(',')
+}
+
+export async function searchEbayItems(search, limit = EBAY_SEARCH_LIMIT) {
+	const keywords = readText(search.keywords)
 	if (!keywords) {
-		throw new Error('Search query is required')
+		throw new Error('Search keywords are required')
 	}
 	const params = new URLSearchParams({
 		q: keywords,
 		limit: String(readSearchLimit(limit)),
-		filter: 'buyingOptions:{FIXED_PRICE}',
+		filter: buildSearchFilter(search),
 	})
 	const data = await ebayRequest('search', `/buy/browse/v1/item_summary/search?${params}`)
 
@@ -865,4 +925,143 @@ export async function convertPrice(amount, fromCurrency, toCurrency) {
 	result.rateStale = rates.stale
 	result.converted = true
 	return result
+}
+
+async function nrpRequest(operation, body) {
+	if (!config.nrp.enabled) {
+		throw new Error('Natural-language search is disabled')
+	}
+	let response
+	try {
+		response = await fetch(`${config.nrp.baseUrl}/chat/completions`, {
+			method: 'POST',
+			body: JSON.stringify(body),
+			headers: {
+				Authorization: `Bearer ${config.nrp.token}`,
+				'Content-Type': 'application/json',
+			},
+			signal: AbortSignal.timeout(NRP_REQUEST_TIMEOUT_MS),
+		})
+	} catch (error) {
+		await recordApiUsage('llm', operation, false)
+		throw new Error(`NRP ${operation} request failed`, { cause: error })
+	}
+
+	await recordApiUsage('llm', operation, response.ok)
+	if (!response.ok) {
+		throw new Error(`NRP ${operation} request failed with status ${response.status}`)
+	}
+	return response.json()
+}
+
+function readReplyText(data) {
+	if (!data || !Array.isArray(data.choices) || data.choices.length === 0) {
+		return ''
+	}
+	const choice = data.choices[0]
+	if (!choice || !choice.message) {
+		return ''
+	}
+	return readText(choice.message.content)
+}
+
+function readJsonObject(text) {
+	const start = text.indexOf('{')
+	const end = text.lastIndexOf('}')
+	if (start === -1 || end < start) {
+		return null
+	}
+	let value
+	try {
+		value = JSON.parse(text.slice(start, end + 1))
+	} catch {
+		return null
+	}
+	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+		return null
+	}
+	return value
+}
+
+function isMissing(value) {
+	return value === undefined || value === null
+}
+
+function isValidOptionalPrice(value) {
+	if (isMissing(value)) {
+		return true
+	}
+	return readPrice(value) !== null
+}
+
+function readOptionalPrice(value) {
+	if (isMissing(value)) {
+		return null
+	}
+	return readPrice(value)
+}
+
+function isValidOptionalCondition(value) {
+	if (isMissing(value)) {
+		return true
+	}
+	return SEARCH_CONDITIONS.includes(readText(value).toLowerCase())
+}
+
+function readOptionalCondition(value) {
+	if (isMissing(value)) {
+		return null
+	}
+	return readText(value).toLowerCase()
+}
+
+function toSearchParams(output) {
+	if (!output) {
+		return null
+	}
+	const keywords = readText(output.keywords)
+	if (keywords === '' || keywords.length > MAX_SEARCH_KEYWORDS_LENGTH) {
+		return null
+	}
+	if (!isValidOptionalPrice(output.minPrice) || !isValidOptionalPrice(output.maxPrice)) {
+		return null
+	}
+	if (!isValidOptionalCondition(output.condition)) {
+		return null
+	}
+	const minPrice = readOptionalPrice(output.minPrice)
+	const maxPrice = readOptionalPrice(output.maxPrice)
+	if (minPrice !== null && maxPrice !== null && minPrice > maxPrice) {
+		return null
+	}
+	return {
+		keywords,
+		minPrice,
+		maxPrice,
+		condition: readOptionalCondition(output.condition),
+	}
+}
+
+export async function parseSearchQuery(query) {
+	const text = readText(query)
+	if (!text) {
+		throw new Error('Search query is required')
+	}
+	const data = await nrpRequest('search', {
+		model: config.nrp.model,
+		temperature: 0,
+		max_tokens: NRP_MAX_REPLY_TOKENS,
+		messages: [
+			{ role: 'system', content: SEARCH_PROMPT },
+			{ role: 'user', content: text },
+		],
+	})
+
+	const reply = readReplyText(data)
+	const output = readJsonObject(reply)
+	const params = toSearchParams(output)
+	if (!params) {
+		console.warn('Skipping invalid LLM search output:', reply)
+	}
+	return params
 }

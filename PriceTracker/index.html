@@ -61,6 +61,27 @@
 			</table>
 		</section>
 
+		<section id="search-section" hidden>
+			<h2>Search eBay</h2>
+			<form id="search-form">
+				<label>Describe what you want <input type="text" name="query" maxlength="200" required /></label>
+				<button type="submit" id="search-button">Search</button>
+			</form>
+			<p id="search-note"></p>
+			<table>
+				<thead>
+					<tr>
+						<th>Name</th>
+						<th>Condition</th>
+						<th>Price</th>
+						<th>Native Price</th>
+						<th>Track</th>
+					</tr>
+				</thead>
+				<tbody id="search-body"></tbody>
+			</table>
+		</section>
+
 		<section id="history-section" hidden>
 			<h2>Price History: <span id="history-name"></span></h2>
 			<p>Every point is converted with the current exchange rate, so the line shows the vendor's price changes, not exchange-rate changes.</p>
