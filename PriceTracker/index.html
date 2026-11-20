@@ -31,6 +31,43 @@
 			<button type="button" id="logout-button">Log Out</button>
 		</section>
 
+		<section id="settings-section" hidden>
+			<h2>Currency</h2>
+			<form id="currency-form">
+				<label>Display currency <select id="currency-select"></select></label>
+				<button type="submit">Save</button>
+			</form>
+		</section>
+
+		<section id="items-section" hidden>
+			<h2>Tracked Items</h2>
+			<form id="add-item-form">
+				<label>Amazon URL or eBay item ID or link <input type="text" name="input" required /></label>
+				<button type="submit" id="add-item-button">Add</button>
+			</form>
+			<table>
+				<thead>
+					<tr>
+						<th>Vendor</th>
+						<th>Name</th>
+						<th>Price</th>
+						<th>Native Price</th>
+						<th>Target Price</th>
+						<th>Actions</th>
+						<th>Exchange Rate</th>
+					</tr>
+				</thead>
+				<tbody id="items-body"></tbody>
+			</table>
+		</section>
+
+		<section id="history-section" hidden>
+			<h2>Price History: <span id="history-name"></span></h2>
+			<p>Every point is converted with the current exchange rate, so the line shows the vendor's price changes, not exchange-rate changes.</p>
+			<p id="history-note"></p>
+			<svg id="history-graph"></svg>
+		</section>
+
 		<script type="module" src="/src/main.ts"></script>
 	</body>
 </html>
