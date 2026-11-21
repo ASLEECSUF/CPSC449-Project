@@ -17,6 +17,7 @@ interface TrackedItem {
 	name: string
 	currency: string | null
 	currentPrice: number | null
+	targetPrice: number | null
 	displayCurrency: string | null
 	displayCurrentPrice: number | null
 	displayTargetPrice: number | null
@@ -190,9 +191,27 @@ function createTargetInput(item: TrackedItem): HTMLInputElement {
 	return input
 }
 
+function hasReachedTarget(item: TrackedItem): boolean {
+	if (item.currentPrice === null || item.targetPrice === null) {
+		return false
+	}
+	return item.currentPrice <= item.targetPrice
+}
+
+function createTargetReachedLabel(): HTMLParagraphElement {
+	const label = document.createElement('p')
+	label.className = 'target-reached-label'
+	label.textContent = 'Target reached!'
+	return label
+}
+
 function buildItemRow(item: TrackedItem): HTMLTableRowElement {
 	const row = document.createElement('tr')
 	row.dataset.itemId = item.id
+	const targetReached = hasReachedTarget(item)
+	if (targetReached) {
+		row.className = 'target-reached'
+	}
 	addCell(row, vendorLabel(item.vendor))
 	addCell(row, item.name)
 	addCell(row, formatPrice(item.displayCurrentPrice, item.displayCurrency))
@@ -203,6 +222,9 @@ function buildItemRow(item: TrackedItem): HTMLTableRowElement {
 	targetCell.append(targetInput)
 	targetCell.append(` ${item.displayCurrency ?? ''} `)
 	targetCell.append(createButton('Save', () => saveTargetPrice(item.id, targetInput)))
+	if (targetReached) {
+		targetCell.append(createTargetReachedLabel())
+	}
 
 	const actionsCell = row.insertCell()
 	actionsCell.append(createButton('History', () => showHistory(item.id)))

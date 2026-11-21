@@ -61,6 +61,16 @@ select {
 	width: 90px;
 }
 
+.target-reached td {
+	background-color: #e3f6e3;
+}
+
+.target-reached-label {
+	margin: 4px 0 0;
+	font-weight: bold;
+	color: #1b6e1b;
+}
+
 button {
 	margin: 2px;
 }
