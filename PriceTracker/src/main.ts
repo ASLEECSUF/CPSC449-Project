@@ -38,8 +38,30 @@ interface SearchResult {
 	converted: boolean
 }
 
+interface ChatMessage {
+	role: 'user' | 'assistant'
+	content: string
+}
+
+interface ChatSearch {
+	keywords: string
+	minPrice: number | null
+	maxPrice: number | null
+	priceCurrency: string
+	condition: string | null
+	priceFilterSkipped: boolean
+}
+
+interface ChatReply {
+	reply: string
+	search: ChatSearch | null
+	results: SearchResult[]
+}
+
 const ITEM_COLUMN_COUNT = 8
-const SEARCH_COLUMN_COUNT = 5
+const SEARCH_COLUMN_TITLES = ['Name', 'Condition', 'Price', 'Native Price', 'Track']
+const MAX_CHAT_MESSAGES = 30
+const CHAT_GREETING = "Hi! Tell me what you're shopping for and I'll find options on eBay."
 
 const statusText = document.querySelector<HTMLParagraphElement>('#status')!
 const authSection = document.querySelector<HTMLElement>('#auth-section')!
@@ -59,13 +81,15 @@ const historySection = document.querySelector<HTMLElement>('#history-section')!
 const historyName = document.querySelector<HTMLSpanElement>('#history-name')!
 const historyNote = document.querySelector<HTMLParagraphElement>('#history-note')!
 const historyGraph = document.querySelector<SVGSVGElement>('#history-graph')!
-const searchSection = document.querySelector<HTMLElement>('#search-section')!
-const searchForm = document.querySelector<HTMLFormElement>('#search-form')!
-const searchButton = document.querySelector<HTMLButtonElement>('#search-button')!
-const searchNote = document.querySelector<HTMLParagraphElement>('#search-note')!
-const searchBody = document.querySelector<HTMLTableSectionElement>('#search-body')!
+const chatSection = document.querySelector<HTMLElement>('#chat-section')!
+const chatLog = document.querySelector<HTMLDivElement>('#chat-log')!
+const chatForm = document.querySelector<HTMLFormElement>('#chat-form')!
+const chatInput = document.querySelector<HTMLInputElement>('#chat-input')!
+const chatButton = document.querySelector<HTMLButtonElement>('#chat-button')!
+const chatClearButton = document.querySelector<HTMLButtonElement>('#chat-clear-button')!
 
 let trackedItems: TrackedItem[] = []
+let chatHistory: ChatMessage[] = []
 let historyItemId: string | null = null
 let historyPoints: HistoryPoint[] = []
 let historyCurrency = ''
@@ -423,9 +447,9 @@ async function stopPriceUpdates() {
 	priceChannel = null
 }
 
-function describePriceLimit(body: any): string {
-	const low = formatPrice(body.minPrice, body.priceCurrency)
-	const high = formatPrice(body.maxPrice, body.priceCurrency)
+function describePriceLimit(search: ChatSearch): string {
+	const low = formatPrice(search.minPrice, search.priceCurrency)
+	const high = formatPrice(search.maxPrice, search.priceCurrency)
 	if (low !== '' && high !== '') {
 		return `between ${low} and ${high}`
 	}
@@ -447,23 +471,20 @@ function hasUnconvertedResult(results: SearchResult[]): boolean {
 	return false
 }
 
-function describeSearch(body: any): string {
-	let text = `Searched eBay for "${body.keywords}"`
-	if (body.condition) {
-		text += `, ${body.condition} only`
+function describeSearch(search: ChatSearch, results: SearchResult[]): string {
+	let text = `Searched eBay for "${search.keywords}"`
+	if (search.condition) {
+		text += `, ${search.condition} only`
 	}
-	const priceLimit = describePriceLimit(body)
+	const priceLimit = describePriceLimit(search)
 	if (priceLimit !== '') {
 		text += `, ${priceLimit}`
 	}
 	text += '.'
-	if (!body.aiParsed) {
-		text += ' The AI search helper was unavailable, so your text was searched as typed.'
-	}
-	if (body.priceFilterSkipped) {
+	if (search.priceFilterSkipped) {
 		text += ' The price limit was not applied because exchange rates are unavailable.'
 	}
-	if (hasUnconvertedResult(body.results)) {
+	if (hasUnconvertedResult(results)) {
 		text += ' Some prices are in their native currency because exchange rates are unavailable.'
 	}
 	return text
@@ -507,38 +528,113 @@ function buildSearchRow(result: SearchResult): HTMLTableRowElement {
 	return row
 }
 
-function renderSearchResults(results: SearchResult[]) {
-	searchBody.replaceChildren()
-	if (results.length === 0) {
-		const row = searchBody.insertRow()
-		const cell = addCell(row, 'No results found.')
-		cell.colSpan = SEARCH_COLUMN_COUNT
+function buildResultsTable(results: SearchResult[]): HTMLTableElement {
+	const table = document.createElement('table')
+	const headerRow = table.createTHead().insertRow()
+	for (const title of SEARCH_COLUMN_TITLES) {
+		const header = document.createElement('th')
+		header.textContent = title
+		headerRow.append(header)
+	}
+	const body = table.createTBody()
+	for (const result of results) {
+		body.append(buildSearchRow(result))
+	}
+	return table
+}
+
+function chatLabel(role: string): string {
+	if (role === 'user') {
+		return 'You'
+	}
+	return 'Assistant'
+}
+
+function createChatMessage(role: string, text: string): HTMLDivElement {
+	const message = document.createElement('div')
+	message.className = `chat-message chat-${role}`
+	const label = document.createElement('strong')
+	label.textContent = chatLabel(role)
+	const body = document.createElement('p')
+	body.textContent = text
+	message.append(label, body)
+	return message
+}
+
+function scrollChatToEnd() {
+	chatLog.scrollTop = chatLog.scrollHeight
+}
+
+function showChatMessage(message: HTMLDivElement) {
+	chatLog.append(message)
+	scrollChatToEnd()
+}
+
+function showChatReply(body: ChatReply) {
+	const message = createChatMessage('assistant', body.reply)
+	if (body.search) {
+		const note = document.createElement('p')
+		note.className = 'chat-note'
+		note.textContent = describeSearch(body.search, body.results)
+		message.append(note)
+	}
+	if (body.results.length > 0) {
+		message.append(buildResultsTable(body.results))
+	}
+	showChatMessage(message)
+}
+
+function rememberChatReply(body: ChatReply) {
+	let content = body.reply
+	if (body.search) {
+		content += `\n[${describeSearch(body.search, body.results)}]`
+	}
+	chatHistory.push({ role: 'assistant', content })
+}
+
+function recentChatHistory(): ChatMessage[] {
+	let start = 0
+	if (chatHistory.length > MAX_CHAT_MESSAGES) {
+		start = chatHistory.length - MAX_CHAT_MESSAGES
+	}
+	while (start < chatHistory.length && chatHistory[start].role !== 'user') {
+		start++
+	}
+	return chatHistory.slice(start)
+}
+
+function clearChat() {
+	chatHistory = []
+	chatLog.replaceChildren()
+	chatForm.reset()
+	showChatMessage(createChatMessage('assistant', CHAT_GREETING))
+}
+
+async function handleChat(event: SubmitEvent) {
+	event.preventDefault()
+	const text = chatInput.value.trim()
+	if (text === '') {
 		return
 	}
-	for (const result of results) {
-		searchBody.append(buildSearchRow(result))
-	}
-}
 
-function clearSearchResults() {
-	searchNote.textContent = ''
-	searchBody.replaceChildren()
-}
-
-async function handleSearch(event: SubmitEvent) {
-	event.preventDefault()
-	const fields = new FormData(searchForm)
-	showStatus('Searching...')
-	searchButton.disabled = true
+	chatHistory.push({ role: 'user', content: text })
+	const userMessage = createChatMessage('user', text)
+	showChatMessage(userMessage)
+	chatForm.reset()
+	showStatus('The assistant is thinking...')
+	chatButton.disabled = true
 	try {
-		const body = await apiRequest('POST', '/api/search', { query: String(fields.get('query')) })
-		searchNote.textContent = describeSearch(body)
-		renderSearchResults(body.results)
+		const body: ChatReply = await apiRequest('POST', '/api/chat', { messages: recentChatHistory() })
+		showChatReply(body)
+		rememberChatReply(body)
 		showStatus('')
 	} catch (error) {
+		chatHistory.pop()
+		userMessage.remove()
+		chatInput.value = text
 		showStatus(readErrorText(error))
 	}
-	searchButton.disabled = false
+	chatButton.disabled = false
 }
 
 function fillCurrencySelect(currencies: Currency[], selectedCode: string) {
@@ -572,7 +668,6 @@ async function handleSaveCurrency(event: SubmitEvent) {
 		showStatus(readErrorText(error))
 		return
 	}
-	clearSearchResults()
 	await reloadPrices()
 	showStatus('Currency saved.')
 }
@@ -582,13 +677,12 @@ function showSignedOut() {
 	accountSection.hidden = true
 	settingsSection.hidden = true
 	itemsSection.hidden = true
-	searchSection.hidden = true
+	chatSection.hidden = true
 	accountEmail.textContent = ''
 	currencySelect.replaceChildren()
 	trackedItems = []
 	itemsBody.replaceChildren()
-	searchForm.reset()
-	clearSearchResults()
+	clearChat()
 	hideHistory()
 }
 
@@ -597,7 +691,7 @@ function showSignedIn(email: string) {
 	accountSection.hidden = false
 	settingsSection.hidden = false
 	itemsSection.hidden = false
-	searchSection.hidden = false
+	chatSection.hidden = false
 	accountEmail.textContent = email
 }
 
@@ -681,6 +775,8 @@ loginForm.addEventListener('submit', handleLogin)
 logoutButton.addEventListener('click', handleLogout)
 currencyForm.addEventListener('submit', handleSaveCurrency)
 addItemForm.addEventListener('submit', handleAddItem)
-searchForm.addEventListener('submit', handleSearch)
+chatForm.addEventListener('submit', handleChat)
+chatClearButton.addEventListener('click', clearChat)
 
+clearChat()
 loadAccount()

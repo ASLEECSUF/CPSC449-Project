@@ -25,9 +25,36 @@ select {
 }
 
 #add-item-form input,
-#search-form input {
+#chat-form input {
 	width: 400px;
 	max-width: 100%;
+}
+
+#chat-log {
+	border: 1px solid #999;
+	padding: 8px;
+	max-height: 600px;
+	overflow-y: auto;
+	margin-bottom: 12px;
+}
+
+.chat-message {
+	padding: 8px;
+	margin-bottom: 8px;
+}
+
+.chat-message p {
+	margin: 4px 0;
+	white-space: pre-wrap;
+}
+
+.chat-user {
+	background-color: #eef3fb;
+}
+
+.chat-note {
+	font-style: italic;
+	color: #555;
 }
 
 #items-body input {

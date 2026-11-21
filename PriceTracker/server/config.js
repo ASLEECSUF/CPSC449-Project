@@ -79,7 +79,7 @@ export function parseConfig(env) {
 	}
 	nrp.enabled = Boolean(nrp.token)
 	if (!nrp.enabled) {
-		warnings.push('NRP_TOKEN is not set; natural-language search is disabled')
+		warnings.push('NRP_TOKEN is not set; the AI shopping assistant is disabled')
 	}
 
 	const brightData = {

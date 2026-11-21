@@ -31,17 +31,18 @@ const EBAY_MARKETPLACE_CURRENCIES = {
 	EBAY_ES: 'EUR',
 }
 const NRP_REQUEST_TIMEOUT_MS = 30_000
-const NRP_MAX_REPLY_TOKENS = 200
+const NRP_CHAT_MAX_TOKENS = 300
+const NRP_COMMENT_MAX_TOKENS = 300
+const NRP_TEMPLATE_OPTIONS = { enable_thinking: false }
 const MAX_SEARCH_KEYWORDS_LENGTH = 100
 const SEARCH_CONDITIONS = ['new', 'used']
-const SEARCH_PROMPT = [
-	'You turn a shopping request into search settings for eBay.',
-	'Reply with only one JSON object and no other text, in this shape:',
-	'{"keywords": string, "minPrice": number or null, "maxPrice": number or null, "condition": "new" or "used" or null}',
-	'keywords: the product words to search for, without prices, condition, or filler words.',
-	'minPrice and maxPrice: plain numbers taken from the request, without currency symbols. Use null when the request gives no limit.',
-	'condition: "new" or "used" only when the request asks for one, otherwise null.',
-].join('\n')
+const COMMENT_PROMPT = [
+	'You are a shopping assistant that helps the user find products to buy on eBay.',
+	'You just searched eBay for the user and got the listings below.',
+	'Write a short reply of at most four sentences that points out the listings that best match what the user wants, naming them with their prices.',
+	'Only talk about listings from the list. Write plain text without markdown.',
+	'Listings:',
+]
 const UPPERCASE_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 const DIGITS = '0123456789'
 
@@ -973,7 +974,7 @@ export async function convertPrice(amount, fromCurrency, toCurrency) {
 
 async function nrpRequest(operation, body) {
 	if (!config.nrp.enabled) {
-		throw new Error('Natural-language search is disabled')
+		throw new Error('The AI shopping assistant is disabled')
 	}
 	let response
 	try {
@@ -1086,26 +1087,89 @@ function toSearchParams(output) {
 	}
 }
 
-export async function parseSearchQuery(query) {
-	const text = readText(query)
-	if (!text) {
-		throw new Error('Search query is required')
+function toChatPlan(output) {
+	if (!output) {
+		return null
 	}
-	const data = await nrpRequest('search', {
+	const reply = readText(output.reply)
+	if (isMissing(output.search)) {
+		if (reply === '') {
+			return null
+		}
+		return { reply, search: null }
+	}
+	const search = toSearchParams(output.search)
+	if (!search) {
+		return null
+	}
+	return { reply, search }
+}
+
+function buildChatPrompt(currency) {
+	return [
+		'You are a shopping assistant that helps the user find products to buy on eBay.',
+		'Reply with only one JSON object and no other text, in this shape:',
+		'{"reply": string, "search": null or {"keywords": string, "minPrice": number or null, "maxPrice": number or null, "condition": "new" or "used" or null}}',
+		'reply: a short, friendly message to the user in plain text without markdown.',
+		'search: the eBay search to run now, or null when you need to ask the user a question first.',
+		'Only ask a question when the request is too vague to search, such as when no kind of product is named. Otherwise search right away.',
+		'Build each search from the whole conversation, so follow-ups like "cheaper" or "show used ones" change the previous search.',
+		'keywords: the product words to search for, without prices, condition, or filler words. Include the kind of product so that accessories and parts for it are not matched.',
+		`minPrice and maxPrice: plain numbers in ${currency}, without currency symbols. Use null when there is no limit.`,
+		'condition: "new" or "used" only when the user asks for one, otherwise null.',
+		'Your earlier messages may end with a note in square brackets that describes the search that was run.',
+	].join('\n')
+}
+
+function formatListingPrice(result) {
+	if (result.displayPrice === null) {
+		return 'price unavailable'
+	}
+	return `${result.displayPrice.toFixed(2)} ${result.displayCurrency}`
+}
+
+function formatListing(result, number) {
+	let condition = 'condition not listed'
+	if (result.condition) {
+		condition = result.condition
+	}
+	return `${number}. ${result.name} | ${condition} | ${formatListingPrice(result)}`
+}
+
+function buildCommentPrompt(results) {
+	const lines = COMMENT_PROMPT.slice()
+	for (let index = 0; index < results.length; index++) {
+		lines.push(formatListing(results[index], index + 1))
+	}
+	return lines.join('\n')
+}
+
+export async function planChatTurn(messages, currency) {
+	const systemMessage = { role: 'system', content: buildChatPrompt(currency) }
+	const data = await nrpRequest('chat', {
 		model: config.nrp.model,
 		temperature: 0,
-		max_tokens: NRP_MAX_REPLY_TOKENS,
-		messages: [
-			{ role: 'system', content: SEARCH_PROMPT },
-			{ role: 'user', content: text },
-		],
+		max_tokens: NRP_CHAT_MAX_TOKENS,
+		chat_template_kwargs: NRP_TEMPLATE_OPTIONS,
+		messages: [systemMessage].concat(messages),
 	})
 
 	const reply = readReplyText(data)
-	const output = readJsonObject(reply)
-	const params = toSearchParams(output)
-	if (!params) {
-		console.warn('Skipping invalid LLM search output:', reply)
+	const plan = toChatPlan(readJsonObject(reply))
+	if (!plan) {
+		console.warn('Skipping invalid LLM chat output:', reply)
 	}
-	return params
+	return plan
+}
+
+export async function commentOnResults(messages, results) {
+	const systemMessage = { role: 'system', content: buildCommentPrompt(results) }
+	const data = await nrpRequest('comment', {
+		model: config.nrp.model,
+		temperature: 0,
+		max_tokens: NRP_COMMENT_MAX_TOKENS,
+		chat_template_kwargs: NRP_TEMPLATE_OPTIONS,
+		messages: [systemMessage].concat(messages),
+	})
+	return readReplyText(data)
 }

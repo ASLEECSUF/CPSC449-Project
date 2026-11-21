@@ -62,25 +62,14 @@
 			</table>
 		</section>
 
-		<section id="search-section" hidden>
-			<h2>Search eBay</h2>
-			<form id="search-form">
-				<label>Describe what you want <input type="text" name="query" maxlength="200" required /></label>
-				<button type="submit" id="search-button">Search</button>
+		<section id="chat-section" hidden>
+			<h2>Shopping Assistant</h2>
+			<div id="chat-log"></div>
+			<form id="chat-form">
+				<label>Message <input type="text" id="chat-input" maxlength="300" autocomplete="off" required /></label>
+				<button type="submit" id="chat-button">Send</button>
+				<button type="button" id="chat-clear-button">New Chat</button>
 			</form>
-			<p id="search-note"></p>
-			<table>
-				<thead>
-					<tr>
-						<th>Name</th>
-						<th>Condition</th>
-						<th>Price</th>
-						<th>Native Price</th>
-						<th>Track</th>
-					</tr>
-				</thead>
-				<tbody id="search-body"></tbody>
-			</table>
 		</section>
 
 		<section id="history-section" hidden>

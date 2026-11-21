@@ -1,13 +1,14 @@
 import express, { Router } from 'express'
 import { isAuthError } from '@supabase/supabase-js'
 import {
+	commentOnResults,
 	convertPrice,
 	getEbayItem,
 	getEbaySearchCurrency,
 	getSupportedCurrencies,
 	parseAmazonUrl,
 	parseEbayItem,
-	parseSearchQuery,
+	planChatTurn,
 	scrapeAmazonProduct,
 	searchEbayItems,
 } from './apis.js'
@@ -33,7 +34,12 @@ import { startPoller, stopPoller } from './poller.js'
 const INVALID_TEXT_REPRESENTATION = '22P02'
 const UNIQUE_VIOLATION = '23505'
 const MAX_STORED_PRICE = 10_000_000_000
-const MAX_SEARCH_QUERY_LENGTH = 200
+const MAX_CHAT_MESSAGES = 30
+const MAX_USER_MESSAGE_LENGTH = 300
+const MAX_ASSISTANT_MESSAGE_LENGTH = 4000
+const ASSISTANT_UNAVAILABLE_REPLY = 'The AI assistant is unavailable right now, so I searched eBay for your message as typed.'
+const NO_RESULTS_REPLY = 'I could not find any eBay listings for that. Try different words or a wider price range.'
+const DEFAULT_RESULTS_REPLY = 'Here is what I found on eBay.'
 const VENDOR_LABELS = {
 	amazon: 'Amazon',
 	ebay: 'eBay',
@@ -518,32 +524,90 @@ async function getItemHistory(request, response) {
 	})
 }
 
-function readSearchQuery(body) {
-	if (typeof body?.query !== 'string') {
-		return ''
+function maxMessageLength(role) {
+	if (role === 'user') {
+		return MAX_USER_MESSAGE_LENGTH
 	}
-	return body.query.trim()
+	return MAX_ASSISTANT_MESSAGE_LENGTH
 }
 
-function toPlainSearch(query) {
-	return { keywords: query, minPrice: null, maxPrice: null, condition: null }
+function readChatMessage(message) {
+	if (!message || typeof message.content !== 'string') {
+		return null
+	}
+	if (message.role !== 'user' && message.role !== 'assistant') {
+		return null
+	}
+	const content = message.content.trim()
+	if (content === '' || content.length > maxMessageLength(message.role)) {
+		return null
+	}
+	return { role: message.role, content }
 }
 
-async function readSearchParams(query) {
+function readChatMessages(body) {
+	const messages = body?.messages
+	if (!Array.isArray(messages) || messages.length === 0 || messages.length > MAX_CHAT_MESSAGES) {
+		return null
+	}
+	const chatMessages = []
+	for (const message of messages) {
+		const chatMessage = readChatMessage(message)
+		if (!chatMessage) {
+			return null
+		}
+		chatMessages.push(chatMessage)
+	}
+	if (chatMessages[chatMessages.length - 1].role !== 'user') {
+		return null
+	}
+	return chatMessages
+}
+
+function toPlainSearch(text) {
+	return { keywords: text, minPrice: null, maxPrice: null, condition: null }
+}
+
+async function planChat(messages, displayCurrency) {
+	const lastMessage = messages[messages.length - 1].content
+	const fallback = { reply: ASSISTANT_UNAVAILABLE_REPLY, search: toPlainSearch(lastMessage), aiAvailable: false }
 	if (!config.nrp.enabled) {
-		return { aiParsed: false, params: toPlainSearch(query) }
+		return fallback
 	}
 
-	let params = null
+	let plan = null
 	try {
-		params = await parseSearchQuery(query)
+		plan = await planChatTurn(messages, displayCurrency)
 	} catch (error) {
-		console.error('LLM search parsing failed:', error)
+		console.error('LLM chat planning failed:', error)
 	}
-	if (!params) {
-		return { aiParsed: false, params: toPlainSearch(query) }
+	if (!plan) {
+		return fallback
 	}
-	return { aiParsed: true, params }
+	return { reply: plan.reply, search: plan.search, aiAvailable: true }
+}
+
+async function writeResultsReply(plan, messages, results) {
+	if (!plan.aiAvailable) {
+		return plan.reply
+	}
+	if (results.length === 0) {
+		return NO_RESULTS_REPLY
+	}
+
+	let comment = ''
+	try {
+		comment = await commentOnResults(messages, results)
+	} catch (error) {
+		console.error('LLM result comment failed:', error)
+	}
+	if (comment !== '') {
+		return comment
+	}
+	if (plan.reply !== '') {
+		return plan.reply
+	}
+	return DEFAULT_RESULTS_REPLY
 }
 
 async function toEbaySearch(params, displayCurrency) {
@@ -590,14 +654,12 @@ async function toSearchResultBody(item, displayCurrency) {
 	}
 }
 
-async function postSearch(request, response) {
-	const query = readSearchQuery(request.body)
-	if (!query) {
-		response.status(400).json({ error: 'query is required' })
-		return
-	}
-	if (query.length > MAX_SEARCH_QUERY_LENGTH) {
-		response.status(400).json({ error: `query must be ${MAX_SEARCH_QUERY_LENGTH} characters or fewer` })
+async function postChat(request, response) {
+	const messages = readChatMessages(request.body)
+	if (!messages) {
+		response.status(400).json({
+			error: `messages must be 1 to ${MAX_CHAT_MESSAGES} chat messages ending with a user message of ${MAX_USER_MESSAGE_LENGTH} characters or fewer`,
+		})
 		return
 	}
 	if (!config.ebay.enabled) {
@@ -619,8 +681,12 @@ async function postSearch(request, response) {
 	}
 
 	const displayCurrency = request.user.preferredCurrency
-	const searchParams = await readSearchParams(query)
-	const ebaySearch = await toEbaySearch(searchParams.params, displayCurrency)
+	const plan = await planChat(messages, displayCurrency)
+	if (!plan.search) {
+		response.json({ reply: plan.reply, search: null, results: [] })
+		return
+	}
+	const ebaySearch = await toEbaySearch(plan.search, displayCurrency)
 
 	let items
 	try {
@@ -635,15 +701,17 @@ async function postSearch(request, response) {
 	for (const item of items) {
 		results.push(await toSearchResultBody(item, displayCurrency))
 	}
+	const reply = await writeResultsReply(plan, messages, results)
 	response.json({
-		query,
-		aiParsed: searchParams.aiParsed,
-		keywords: searchParams.params.keywords,
-		minPrice: searchParams.params.minPrice,
-		maxPrice: searchParams.params.maxPrice,
-		priceCurrency: displayCurrency,
-		condition: searchParams.params.condition,
-		priceFilterSkipped: ebaySearch.priceFilterSkipped,
+		reply,
+		search: {
+			keywords: plan.search.keywords,
+			minPrice: plan.search.minPrice,
+			maxPrice: plan.search.maxPrice,
+			priceCurrency: displayCurrency,
+			condition: plan.search.condition,
+			priceFilterSkipped: ebaySearch.priceFilterSkipped,
+		},
 		results,
 	})
 }
@@ -670,7 +738,7 @@ app.get('/api/profile', requireAuth, getProfile)
 app.patch('/api/profile', requireAuth, patchProfile)
 app.get('/api/currencies', requireAuth, getCurrencies)
 app.use('/api/items', itemRouter)
-app.post('/api/search', requireAuth, postSearch)
+app.post('/api/chat', requireAuth, postChat)
 app.use('/api/admin', adminRouter)
 
 const server = app.listen(config.port, () => {
