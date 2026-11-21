@@ -1,6 +1,8 @@
 import { createClient } from '@supabase/supabase-js'
 import config from './config.js'
 
+const MAX_HISTORY_POINTS = 1000
+
 const serverAuthOptions = {
 	auth: {
 		autoRefreshToken: false,
@@ -214,15 +216,21 @@ export async function listOwnedPriceHistory(userId, itemId) {
 		.select('id, item_id, price, currency, recorded_at, tracked_items!inner(user_id)')
 		.eq('item_id', itemId)
 		.eq('tracked_items.user_id', userId)
-		.order('recorded_at', { ascending: true })
+		.order('recorded_at', { ascending: false })
+		.limit(MAX_HISTORY_POINTS)
 	if (error) {
 		throw error
 	}
-	return data.map((entry) => ({
-		id: entry.id,
-		item_id: entry.item_id,
-		price: entry.price,
-		currency: entry.currency,
-		recorded_at: entry.recorded_at,
-	}))
+	const entries = []
+	for (const entry of data) {
+		entries.push({
+			id: entry.id,
+			item_id: entry.item_id,
+			price: entry.price,
+			currency: entry.currency,
+			recorded_at: entry.recorded_at,
+		})
+	}
+	entries.reverse()
+	return entries
 }

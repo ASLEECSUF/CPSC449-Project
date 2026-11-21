@@ -94,10 +94,12 @@ function hasPriceChanged(item, product) {
 
 async function recordPrice(item, product) {
 	await insertPriceHistory(item.id, product.price, product.currency)
-	await updateItemPrice(item.id, product.price, product.currency)
+	if (hasPriceChanged(item, product)) {
+		await updateItemPrice(item.id, product.price, product.currency)
+	}
 }
 
-async function recordChangedPrices(groups, prices) {
+async function recordPrices(groups, prices) {
 	const result = { recorded: 0, failed: 0 }
 	for (const vendorItemId of groups.keys()) {
 		const product = prices.get(vendorItemId)
@@ -105,9 +107,6 @@ async function recordChangedPrices(groups, prices) {
 			continue
 		}
 		for (const item of groups.get(vendorItemId)) {
-			if (!hasPriceChanged(item, product)) {
-				continue
-			}
 			try {
 				await recordPrice(item, product)
 				result.recorded++
@@ -138,15 +137,15 @@ async function runVendorPoll(vendor) {
 	const startedAt = Date.now()
 	const prices = await vendor.fetchPrices(groups)
 	const missing = countMissingPrices(groups, prices)
-	const result = await recordChangedPrices(groups, prices)
+	const result = await recordPrices(groups, prices)
 	const seconds = Math.round((Date.now() - startedAt) / 1000)
 
-	console.log(withTime(`${vendor.label} poll finished in ${seconds}s: recorded ${result.recorded} price changes`))
+	console.log(withTime(`${vendor.label} poll finished in ${seconds}s: recorded ${result.recorded} prices`))
 	if (missing > 0) {
 		console.warn(withTime(`${vendor.label} poll could not get a price for ${missing} of ${groups.size} items`))
 	}
 	if (result.failed > 0) {
-		console.error(withTime(`${vendor.label} poll failed to save ${result.failed} price changes`))
+		console.error(withTime(`${vendor.label} poll failed to save ${result.failed} prices`))
 	}
 }
 

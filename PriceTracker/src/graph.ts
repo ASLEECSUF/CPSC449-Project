@@ -54,6 +54,13 @@ function scale(value: number, low: number, high: number, start: number, end: num
 	return start + fraction * (end - start)
 }
 
+function isPriceChange(graphPoints: GraphPoint[], index: number): boolean {
+	if (index === 0) {
+		return true
+	}
+	return graphPoints[index].price !== graphPoints[index - 1].price
+}
+
 function addSvgElement(svg: SVGSVGElement, name: string, attributes: Record<string, string>): SVGElement {
 	const element = document.createElementNS(SVG_NAMESPACE, name)
 	for (const key in attributes) {
@@ -115,11 +122,14 @@ export function drawPriceGraph(svg: SVGSVGElement, points: HistoryPoint[], curre
 	addLine(svg, LEFT, BOTTOM, RIGHT, BOTTOM)
 
 	const coordinates: string[] = []
-	for (const point of graphPoints) {
+	for (let index = 0; index < graphPoints.length; index++) {
+		const point = graphPoints[index]
 		const x = scale(point.time, timeRange.low, timeRange.high, LEFT, RIGHT)
 		const y = scale(point.price, priceRange.low, priceRange.high, BOTTOM, TOP)
 		coordinates.push(`${x},${y}`)
-		addSvgElement(svg, 'circle', { cx: String(x), cy: String(y), r: '3', fill: 'black' })
+		if (isPriceChange(graphPoints, index)) {
+			addSvgElement(svg, 'circle', { cx: String(x), cy: String(y), r: '3', fill: 'black' })
+		}
 	}
 	addSvgElement(svg, 'polyline', {
 		points: coordinates.join(' '),
