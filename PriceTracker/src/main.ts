@@ -13,6 +13,7 @@ interface Currency {
 interface TrackedItem {
 	id: string
 	vendor: string
+	url: string
 	name: string
 	currency: string | null
 	currentPrice: number | null
@@ -37,7 +38,7 @@ interface SearchResult {
 	converted: boolean
 }
 
-const ITEM_COLUMN_COUNT = 7
+const ITEM_COLUMN_COUNT = 8
 const SEARCH_COLUMN_COUNT = 5
 
 const statusText = document.querySelector<HTMLParagraphElement>('#status')!
@@ -185,6 +186,9 @@ function buildItemRow(item: TrackedItem): HTMLTableRowElement {
 	actionsCell.append(createButton('Remove', () => removeItem(item.id)))
 
 	addCell(row, describeRate(item))
+
+	const linkCell = row.insertCell()
+	linkCell.append(createLink(`View on ${vendorLabel(item.vendor)}`, item.url))
 	return row
 }
 

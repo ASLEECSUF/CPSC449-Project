@@ -409,6 +409,7 @@ function toEbayItemRef(legacyItemId, variationId) {
 	return {
 		itemId: `v1|${legacyItemId}|${variationId}`,
 		legacyItemId,
+		variationId,
 		url: canonicalEbayUrl(legacyItemId, variationId),
 	}
 }
@@ -632,6 +633,46 @@ function isMissingItemError(error) {
 	return error.status === 400 || error.status === 404
 }
 
+function readItemGroupItems(data) {
+	const items = []
+	if (!data || !Array.isArray(data.items)) {
+		return items
+	}
+	for (const record of data.items) {
+		const item = toEbayItem(record)
+		if (!item) {
+			console.warn('Skipping invalid eBay item group record:', record)
+			continue
+		}
+		items.push(item)
+	}
+	return items
+}
+
+function findCheapestItem(items) {
+	let cheapest = null
+	for (const item of items) {
+		if (cheapest === null || item.price < cheapest.price) {
+			cheapest = item
+		}
+	}
+	return cheapest
+}
+
+async function getCheapestGroupItem(legacyItemId) {
+	const params = new URLSearchParams({ item_group_id: legacyItemId })
+	let data
+	try {
+		data = await ebayRequest('item_group', `/buy/browse/v1/item/get_items_by_item_group?${params}`)
+	} catch (error) {
+		if (isMissingItemError(error)) {
+			return null
+		}
+		throw error
+	}
+	return findCheapestItem(readItemGroupItems(data))
+}
+
 export async function getEbayItem(input) {
 	const parsed = parseEbayItem(input)
 	if (!parsed) {
@@ -641,10 +682,13 @@ export async function getEbayItem(input) {
 	try {
 		record = await ebayRequest('item', `/buy/browse/v1/item/${encodeURIComponent(parsed.itemId)}`)
 	} catch (error) {
-		if (isMissingItemError(error)) {
+		if (!isMissingItemError(error)) {
+			throw error
+		}
+		if (parsed.variationId !== '0') {
 			return null
 		}
-		throw error
+		return getCheapestGroupItem(parsed.legacyItemId)
 	}
 	const item = toEbayItem(record)
 	if (!item) {
