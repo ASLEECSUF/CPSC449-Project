@@ -1,3 +1,5 @@
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import express, { Router } from 'express'
 import { isAuthError } from '@supabase/supabase-js'
 import {
@@ -31,6 +33,8 @@ import {
 } from './db.js'
 import { startPoller, stopPoller } from './poller.js'
 
+const SERVER_FOLDER = path.dirname(fileURLToPath(import.meta.url))
+const FRONTEND_FOLDER = path.join(SERVER_FOLDER, '..', 'dist')
 const INVALID_TEXT_REPRESENTATION = '22P02'
 const UNIQUE_VIOLATION = '23505'
 const MAX_STORED_PRICE = 10_000_000_000
@@ -740,6 +744,7 @@ app.get('/api/currencies', requireAuth, getCurrencies)
 app.use('/api/items', itemRouter)
 app.post('/api/chat', requireAuth, postChat)
 app.use('/api/admin', adminRouter)
+app.use(express.static(FRONTEND_FOLDER))
 
 const server = app.listen(config.port, () => {
 	console.log(`Price Tracker API listening on port ${config.port}`)
